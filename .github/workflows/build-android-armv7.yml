@@ -1,14 +1,30 @@
-- name: Build brcm_patchram_plus (ARMv7)
+- name: Patch headers for Android
+  shell: bash
+  run: |
+    set -e
+    # 一些仓库使用 <sys/termios.h>，在 Android NDK 下应改为 <termios.h>
+    shopt -s nullglob
+    for f in *.c src/*.c; do
+      sed -i 's#<sys/termios.h>#<termios.h>#g' "$f" || true
+    done
+
+- name: Build brcm_patchram_plus (ARMv7 Android)
   shell: bash
   run: |
     set -e
     export NDK="$ANDROID_NDK_HOME"
     export TOOL="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
     mkdir -p build
+    # 自动收集源码（不同 fork 目录结构可能不同）
+    SRCS=$(ls src/*.c 2>/dev/null || ls *.c 2>/dev/null)
+    if [ -z "$SRCS" ]; then
+      echo "No .c files found"; exit 1
+    fi
     "$TOOL/clang" --target=armv7a-linux-androideabi16 \
       --sysroot="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" \
       -O2 -Wl,--hash-style=both \
-      -o build/brcm_patchram_plus src/*.c
+      -o build/brcm_patchram_plus $SRCS
+    ls -la build
     file build/brcm_patchram_plus || true
 
 - name: Upload artifact
