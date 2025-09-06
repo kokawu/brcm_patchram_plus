@@ -1,4 +1,54 @@
-name: build-android-armv7 on: workflow_dispatch: jobs: build: runs-on: ubuntu-latest steps: - name: Checkout uses: actions/checkout@v4 - name: Setup Android NDK uses: nttld/setup-ndk@v1 with: ndk-version: r21e - name: Build brcm_patchram_plus (ARMv7) run: | export NDK=$ANDROID_NDK_HOME export TOOL=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin mkdir -p build $TOOL/clang --target=armv7a-linux-androideabi16
---sysroot=$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot
--O2 -Wl,--hash-style=both
--o build/brcm_patchram_plus src/*.c file build/brcm_patchram_plus || true - name: Upload artifact uses: actions/upload-artifact@v4 with: name: brcm_patchram_plus-armv7-android path: build/brcm_patchram_plus 
+name: build-android-armv7
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r21e
+        
+    - name: Build brcm_patchram_plus (ARMv7)
+      run: |
+        export NDK=$ANDROID_NDK_HOME
+        export TOOL=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
+        
+        # Create build directory
+        mkdir -p build
+        
+        # Build for ARMv7 Android
+        $TOOL/clang --target=armv7a-linux-androideabi16 \
+                   --sysroot=$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot \
+                   -O2 -Wl,--hash-style=both \
+                   -o build/brcm_patchram_plus \
+                   brcm_patchram_plus.c
+                   
+        # Check if build succeeded
+        ls -la build/
+        file build/brcm_patchram_plus || true
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: brcm_patchram_plus-armv7-android
+        path: build/brcm_patchram_plus
+        
+    - name: Create Release (if tagged)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: build/brcm_patchram_plus
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
