@@ -1,4 +1,4 @@
-name: build-android-armv7-patched
+name: build-android-armv7-fixed-final
 
 on:
   workflow_dispatch:
@@ -20,15 +20,54 @@ jobs:
       with:
         ndk-version: r25b
         
-    - name: Patch headers for Android
+    - name: Fix source for Android compilation
       shell: bash
       run: |
         set -e
-        # 一些仓库使用 <sys/termios.h>，在 Android NDK 下应改为 <termios.h>
-        shopt -s nullglob
-        for f in *.c src/*.c; do
-          sed -i 's#<sys/termios.h>#<termios.h>#g' "$f" || true
-        done
+        
+        # Create a backup and fix the source file
+        cp brcm_patchram_plus.c brcm_patchram_plus_original.c
+        
+        # Add missing includes at the beginning
+        cat > brcm_patchram_plus_fixed.c << 'EOF'
+        /*
+         * brcm_patchram_plus - Android compatible version
+         * Fixed for Android NDK compilation
+         */
+        
+        #include <stdio.h>
+        #include <stdlib.h>
+        #include <string.h>
+        #include <unistd.h>
+        #include <fcntl.h>
+        #include <errno.h>
+        #include <sys/ioctl.h>
+        #include <sys/stat.h>
+        #include <sys/types.h>
+        #include <termios.h>
+        #include <signal.h>
+        #include <time.h>
+        
+        /* Android compatibility */
+        #ifndef BOTHER
+        #define BOTHER 0010000
+        #endif
+        
+        #ifndef IBSHIFT
+        #define IBSHIFT 16
+        #endif
+        
+        /* Copy the original source content, skipping the includes */
+        EOF
+        
+        # Extract the original source without the includes
+        tail -n +$(grep -n "^#include" brcm_patchram_plus.c | head -1 | cut -d: -f1) brcm_patchram_plus.c >> brcm_patchram_plus_fixed.c
+        
+        # Replace problematic include
+        sed -i 's|#include <sys/termios.h>|#include <termios.h>|g' brcm_patchram_plus_fixed.c
+        
+        echo "=== Fixed source created ==="
+        head -20 brcm_patchram_plus_fixed.c
         
     - name: Build brcm_patchram_plus (ARMv7 Android)
       shell: bash
@@ -37,20 +76,58 @@ jobs:
         export NDK="$ANDROID_NDK_HOME"
         export TOOL="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
         mkdir -p build
-        # 自动收集源码（不同 fork 目录结构可能不同）
-        SRCS=$(ls src/*.c 2>/dev/null || ls *.c 2>/dev/null)
-        if [ -z "$SRCS" ]; then
-          echo "No .c files found"; exit 1
-        fi
+        
+        # Try compilation with the fixed source
         "$TOOL/clang" --target=armv7a-linux-androideabi16 \
           --sysroot="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" \
+          -DANDROID -D__ANDROID__ \
           -O2 -Wl,--hash-style=both \
-          -o build/brcm_patchram_plus $SRCS
-        ls -la build
-        file build/brcm_patchram_plus || true
+          -o build/brcm_patchram_plus \
+          brcm_patchram_plus_fixed.c 2>&1
+        
+        # Check if build succeeded
+        if [ -f build/brcm_patchram_plus ]; then
+          echo "=== BUILD SUCCESSFUL ==="
+          ls -la build/
+          file build/brcm_patchram_plus
+          # Strip binary to reduce size
+          "$TOOL/llvm-strip" build/brcm_patchram_plus 2>/dev/null || true
+          echo "=== Final binary ==="
+          ls -la build/brcm_patchram_plus
+        else
+          echo "=== BUILD FAILED ==="
+          echo "Trying alternative approach..."
+          
+          # Try with different flags
+          "$TOOL/clang" --target=armv7a-linux-androideabi16 \
+            --sysroot="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" \
+            -DANDROID -D__ANDROID__ \
+            -O2 -static \
+            -Wno-implicit-function-declaration \
+            -Wno-deprecated-non-prototype \
+            -o build/brcm_patchram_plus \
+            brcm_patchram_plus_fixed.c 2>&1
+        fi
+        
+        # Final verification
+        if [ -f build/brcm_patchram_plus ]; then
+          echo "=== FINAL SUCCESS ==="
+          file build/brcm_patchram_plus
+        else
+          echo "=== BUILD FAILED COMPLETELY ==="
+          exit 1
+        fi
         
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: brcm_patchram_plus-armv7-android
+        name: brcm_patchram_plus-armv7-android-fixed
         path: build/brcm_patchram_plus
+        
+    - name: Upload debug files
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-files
+        path: |
+          brcm_patchram_plus_fixed.c
+          brcm_patchram_plus_original.c
