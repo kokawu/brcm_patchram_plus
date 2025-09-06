@@ -1,4 +1,4 @@
-name: build-android-armv7
+name: build-android-armv7-fixed
 
 on:
   workflow_dispatch:
@@ -18,37 +18,105 @@ jobs:
     - name: Setup Android NDK
       uses: nttld/setup-ndk@v1
       with:
-        ndk-version: r21e
+        ndk-version: r25b  # Use newer NDK version
         
-    - name: Build brcm_patchram_plus (ARMv7)
+    - name: Build brcm_patchram_plus (ARMv7) - Fixed
       run: |
         export NDK=$ANDROID_NDK_HOME
-        export TOOL=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
+        export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
         
         # Create build directory
         mkdir -p build
         
-        # Build for ARMv7 Android
-        $TOOL/clang --target=armv7a-linux-androideabi16 \
-                   --sysroot=$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot \
-                   -O2 -Wl,--hash-style=both \
-                   -o build/brcm_patchram_plus \
-                   brcm_patchram_plus.c
-                   
-        # Check if build succeeded
+        # Use standalone toolchain approach (more reliable)
+        python3 $NDK/build/tools/make_standalone_toolchain.py \
+            --install-dir=./android-toolchain \
+            --arch=arm \
+            --api=21 \
+            --force
+        
+        export PATH=./android-toolchain/bin:$PATH
+        export CC=arm-linux-androideabi-gcc
+        export STRIP=arm-linux-androideabi-strip
+        
+        echo "Toolchain version:"
+        $CC --version
+        
+        # Fix termios.h issue by creating a compatibility header
+        cat > android_fixes.h << 'EOF'
+        #ifndef ANDROID_FIXES_H
+        #define ANDROID_FIXES_H
+        
+        #include <termios.h>
+        
+        /* Android compatibility fixes */
+        #ifndef BOTHER
+        #define BOTHER 0010000
+        #endif
+        
+        #ifndef IBSHIFT
+        #define IBSHIFT 16
+        #endif
+        
+        /* Add any missing Android definitions */
+        
+        #endif /* ANDROID_FIXES_H */
+        EOF
+        
+        # Create fixed version of brcm_patchram_plus
+        sed 's/#include <sys\/termios.h>/#include <termios.h>\n#include "android_fixes.h"/' brcm_patchram_plus.c > brcm_patchram_plus_android.c
+        
+        echo "=== Fixed source code ==="
+        head -20 brcm_patchram_plus_android.c
+        
+        # Try compilation with different approaches
+        echo "=== Compilation attempt 1: Basic ==="
+        $CC --sysroot=./android-toolchain/sysroot \
+            -O2 -static \
+            -DANDROID -D__ANDROID__ \
+            -o build/brcm_patchram_plus \
+            brcm_patchram_plus_android.c 2>&1
+        
+        if [ -f build/brcm_patchram_plus ]; then
+            echo "Build succeeded!"
+            ls -la build/
+            file build/brcm_patchram_plus
+            $STRIP build/brcm_patchram_plus 2>/dev/null || true
+        else
+            echo "Basic compilation failed, trying alternative..."
+            
+            echo "=== Compilation attempt 2: With includes ==="
+            $CC --sysroot=./android-toolchain/sysroot \
+                -O2 -static \
+                -DANDROID -D__ANDROID__ \
+                -I./android-toolchain/sysroot/usr/include \
+                -o build/brcm_patchram_plus \
+                brcm_patchram_plus_android.c 2>&1
+        fi
+        
+        # Final verification
+        echo "=== Final verification ==="
         ls -la build/
-        file build/brcm_patchram_plus || true
+        if [ -f build/brcm_patchram_plus ]; then
+            file build/brcm_patchram_plus
+            echo "Build successful!"
+        else
+            echo "Build failed - checking source..."
+            ls -la *.c
+            echo "Source file size:"
+            wc -l brcm_patchram_plus.c
+        fi
         
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: brcm_patchram_plus-armv7-android
+        name: brcm_patchram_plus-armv7-android-fixed
         path: build/brcm_patchram_plus
         
-    - name: Create Release (if tagged)
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
+    - name: Upload debug info
+      uses: actions/upload-artifact@v4
       with:
-        files: build/brcm_patchram_plus
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: debug-logs
+        path: |
+          brcm_patchram_plus_android.c
+          android_fixes.h
